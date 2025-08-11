@@ -7,7 +7,7 @@ export class EmbeddingsService {
   private readonly logger = new Logger(EmbeddingsService.name);
   private readonly localLlmHost: string;
   private readonly localLlmPort: string;
-  private readonly localLlmModel: string;
+  private readonly embeddingModel: string;
   private readonly baseUrl: string;
 
   constructor(private configService: ConfigService) {
@@ -19,9 +19,10 @@ export class EmbeddingsService {
       'LOCAL_LLM_PORT',
       '11434',
     );
-    this.localLlmModel = this.configService.get<string>(
-      'LOCAL_LLM_MODEL',
-      'llama3.1:latest',
+    // Use a proper embedding model instead of text generation model
+    this.embeddingModel = this.configService.get<string>(
+      'EMBEDDING_MODEL',
+      'nomic-embed-text:latest',
     );
     this.baseUrl = `http://${this.localLlmHost}:${this.localLlmPort}`;
   }
@@ -32,12 +33,16 @@ export class EmbeddingsService {
   ): Promise<number[]> {
     for (let attempt = 1; attempt <= retries; attempt++) {
       try {
-        // Try to use dedicated embedding model first
+        // Try using dedicated embedding model first
         try {
-          const embeddingResponse = await axios.post(
+          this.logger.log(
+            `Generating embedding using embedding model (attempt ${attempt}) for text: "${text.substring(0, 50)}..."`,
+          );
+
+          const response = await axios.post(
             `${this.baseUrl}/api/embeddings`,
             {
-              model: 'nomic-embed-text', // Common embedding model
+              model: this.embeddingModel,
               prompt: text,
             },
             {
@@ -48,11 +53,21 @@ export class EmbeddingsService {
             },
           );
 
-          if (embeddingResponse.data?.embedding) {
-            this.logger.log(
-              'Successfully generated embedding using dedicated model',
-            );
-            return embeddingResponse.data.embedding;
+          if (response.data?.embedding) {
+            this.logger.log('Successfully generated embedding using dedicated model');
+            let embedding = response.data.embedding;
+
+            // Ensure we have exactly 384 dimensions
+            if (embedding.length > 384) {
+              embedding = embedding.slice(0, 384);
+            } else if (embedding.length < 384) {
+              // Pad with zeros if needed
+              while (embedding.length < 384) {
+                embedding.push(0);
+              }
+            }
+
+            return embedding;
           }
         } catch (embeddingError) {
           this.logger.warn(
@@ -60,117 +75,8 @@ export class EmbeddingsService {
           );
         }
 
-        // Fallback: Use Llama model to generate text-based embedding
-        try {
-          this.logger.log(
-            `Attempting to generate embedding using Llama model for text: "${text.substring(0, 50)}..."`,
-          );
-
-          const prompt = `You are a text embedding generator. Convert the following text into a numerical vector representation.
-
-Text: "${text}"
-
-Generate exactly 100 floating point numbers between -1.0 and 1.0, separated by commas. Each number should represent a semantic aspect of the text. Provide only the numbers, no other text.
-
-Example format: 0.1, -0.3, 0.7, -0.2, 0.5, ...
-
-Numbers:`;
-
-          const response = await axios.post(
-            `${this.baseUrl}/api/generate`,
-            {
-              model: this.localLlmModel,
-              prompt: prompt,
-              stream: false,
-              options: {
-                temperature: 0.1, // Low temperature for consistency
-                max_tokens: 2000,
-                top_p: 0.9,
-              },
-            },
-            {
-              timeout: 60000,
-              headers: {
-                'Content-Type': 'application/json',
-              },
-            },
-          );
-
-          if (response.data?.response) {
-            this.logger.log(
-              `Llama model response received: ${response.data.response.substring(0, 100)}...`,
-            );
-
-            try {
-              // Parse the response to extract numbers
-              const responseText = response.data.response;
-
-              // Extract numbers using regex - look for decimal numbers
-              const numberMatches = responseText.match(/-?\d*\.?\d+/g);
-
-              if (numberMatches && numberMatches.length >= 50) {
-                this.logger.log(
-                  `Found ${numberMatches.length} numbers in Llama response`,
-                );
-
-                // Take the first 100 numbers and convert to floats
-                let embedding = numberMatches.slice(0, 100).map((num) => {
-                  const parsed = parseFloat(num);
-                  return isNaN(parsed) ? 0 : parsed;
-                });
-
-                // Normalize values to [-1, 1] range
-                embedding = embedding.map((val) =>
-                  Math.max(-1, Math.min(1, val)),
-                );
-
-                // Expand to 1536 dimensions using pattern repetition and slight variations
-                const fullEmbedding = [];
-                for (let i = 0; i < 1536; i++) {
-                  const baseIndex = i % embedding.length;
-                  const variation = (i / embedding.length) * 0.1; // Small variation
-                  fullEmbedding.push(embedding[baseIndex] + variation);
-                }
-
-                // Normalize the final vector
-                const magnitude = Math.sqrt(
-                  fullEmbedding.reduce((sum, val) => sum + val * val, 0),
-                );
-                if (magnitude > 0) {
-                  const normalizedEmbedding = fullEmbedding.map(
-                    (val) => val / magnitude,
-                  );
-                  this.logger.log(
-                    'Successfully generated embedding using Llama model',
-                  );
-                  return normalizedEmbedding;
-                }
-              } else {
-                this.logger.warn(
-                  `Not enough numbers found in Llama response. Found: ${numberMatches ? numberMatches.length : 0}`,
-                );
-              }
-            } catch (parseError) {
-              this.logger.warn(
-                `Failed to parse Llama embedding response: ${parseError.message}`,
-              );
-            }
-          } else {
-            this.logger.warn('No response received from Llama model');
-          }
-        } catch (llamaError) {
-          this.logger.warn(
-            `Llama model embedding error: ${llamaError.message}`,
-          );
-          if (llamaError.response) {
-            this.logger.warn(
-              `Llama error response: ${JSON.stringify(llamaError.response.data)}`,
-            );
-          }
-        }
-
-        // Final fallback to simple hash-based embedding
-        this.logger.log('Using fallback simple embedding');
+        // Fallback: Use simple hash-based embedding
+        this.logger.log('Using fallback simple embedding for consistent results');
         return this.generateSimpleEmbedding(text);
       } catch (error) {
         this.logger.error(
@@ -180,6 +86,7 @@ Numbers:`;
 
         if (attempt < retries) {
           const delay = Math.pow(2, attempt) * 1000;
+          this.logger.log(`Retrying in ${delay}ms...`);
           await new Promise((resolve) => setTimeout(resolve, delay));
           continue;
         }
@@ -216,13 +123,13 @@ Numbers:`;
 
   private generateSimpleEmbedding(text: string): number[] {
     // Simple hash-based embedding for development/testing
-    // This creates a consistent 1536-dimensional vector based on text content
+    // This creates a consistent 384-dimensional vector based on text content
     const hash = this.simpleHash(text);
-    const embedding = new Array(1536).fill(0);
+    const embedding = new Array(384).fill(0);
 
     // Use hash to seed pseudo-random values
     let seed = hash;
-    for (let i = 0; i < 1536; i++) {
+    for (let i = 0; i < 384; i++) {
       seed = (seed * 9301 + 49297) % 233280;
       embedding[i] = (seed / 233280) * 2 - 1; // Normalize to [-1, 1]
     }

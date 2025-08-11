@@ -1,14 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import axios from 'axios';
 import { MilvusService } from './milvus.service';
 import { EmbeddingsService } from './embeddings.service';
-
-export interface QueryResponse {
-  answer: string;
-  sources: string[];
-  confidence: number;
-}
+import axios from 'axios';
 
 @Injectable()
 export class AiQueryService {
@@ -33,55 +27,78 @@ export class AiQueryService {
     );
     this.localLlmModel = this.configService.get<string>(
       'LOCAL_LLM_MODEL',
-      'llama3.1',
+      'llama3.1:latest',
     );
     this.baseUrl = `http://${this.localLlmHost}:${this.localLlmPort}`;
   }
 
-  async processQuery(question: string): Promise<QueryResponse> {
+  async queryWithContext(query: string): Promise<string> {
     try {
-      this.logger.log(`Processing query: ${question}`);
+      this.logger.log(`Processing query: "${query}"`);
 
-      // Generate embedding for the question
+      // Generate embedding for the query
       const queryEmbedding =
-        await this.embeddingsService.generateEmbedding(question);
+        await this.embeddingsService.generateEmbedding(query);
 
-      // Search for relevant context in Milvus
-      const searchResults = await this.milvusService.searchSimilar(
+      // Search for similar chunks in Milvus
+      const similarChunks = await this.milvusService.searchSimilar(
         queryEmbedding,
         5,
       );
 
-      // Extract context from search results
-      const contextTexts = searchResults.map(
-        (result) => result.text || result.entity?.text || '',
-      );
-      const context = contextTexts
-        .filter((text) => text.length > 0)
-        .join('\n\n');
+      // Extract context text
+      const contextTexts = similarChunks
+        .map((chunk) => chunk.text || '')
+        .filter((text) => text.length > 0);
 
-      // Generate response using local LLaMA model
-      const answer = await this.generateResponse(question, context);
+      let context = contextTexts.join('\n\n');
 
-      return {
-        answer,
-        sources: contextTexts.filter((text) => text.length > 0),
-        confidence: this.calculateConfidence(searchResults),
-      };
+      this.logger.log(`Found ${contextTexts.length} relevant context chunks`);
+      this.logger.log(`Context preview: "${context.substring(0, 200)}..."`);
+
+      // If no context found, try to get all chunks as fallback
+      if (context.length === 0) {
+        this.logger.warn('No similar chunks found, trying fallback approach');
+        const allChunks = await this.milvusService.getAllChunks();
+        const allTexts = allChunks
+          .map((chunk) => chunk.text || '')
+          .filter((text) => text.length > 0);
+        context = allTexts.join('\n\n');
+        this.logger.log(
+          `Fallback: Using ${allTexts.length} total chunks as context`,
+        );
+      }
+
+      // Generate response using local Llama model
+      const response = await this.generateResponseWithLlama(query, context);
+
+      return response;
     } catch (error) {
       this.logger.error('Error processing query:', error.message);
       throw new Error(`Failed to process query: ${error.message}`);
     }
   }
 
-  private async generateResponse(
-    question: string,
+  private async generateResponseWithLlama(
+    query: string,
     context: string,
   ): Promise<string> {
-    const prompt = this.buildPrompt(question, context);
-
     try {
-      // Try Ollama API format first
+      // Debug: Log the context being used
+      this.logger.log(`Context being used: "${context.substring(0, 200)}..."`);
+
+      const prompt = `Answer the question directly using the provided context. Be concise and straightforward.
+
+Context: ${context}
+
+Question: ${query}
+
+Answer directly:`;
+
+      this.logger.log('Sending request to local Llama model...');
+      this.logger.log(`Query: ${query}`);
+      this.logger.log(`Context length: ${context.length} characters`);
+
       const response = await axios.post(
         `${this.baseUrl}/api/generate`,
         {
@@ -89,12 +106,14 @@ export class AiQueryService {
           prompt: prompt,
           stream: false,
           options: {
-            temperature: 0.7,
-            max_tokens: 500,
+            temperature: 0.1, // Very low temperature for consistent, direct responses
+            num_predict: 100, // Shorter responses
+            top_p: 0.9,
+            stop: ['Question:', 'Context:', '\n\n'],
           },
         },
         {
-          timeout: 60000,
+          timeout: 120000,
           headers: {
             'Content-Type': 'application/json',
           },
@@ -102,69 +121,33 @@ export class AiQueryService {
       );
 
       if (response.data?.response) {
-        this.logger.log(
-          'Successfully generated response using local LLaMA model',
-        );
-        return response.data.response.trim();
+        const answer = response.data.response.trim();
+        this.logger.log('Successfully generated response with Llama model');
+        return answer;
+      } else {
+        throw new Error('No response received from Llama model');
       }
-
-      throw new Error('No response from local model');
     } catch (error) {
-      this.logger.warn(`Local LLaMA model error: ${error.message}`);
-
-      // Fallback to simple context-based response
-      return this.generateFallbackResponse(question, context);
+      this.logger.error('Error generating response with Llama:', error.message);
+      throw new Error(`Failed to generate response: ${error.message}`);
     }
   }
 
-  private buildPrompt(question: string, context: string): string {
-    return `You are a helpful assistant. Use the following context to answer the user's question. If the context doesn't contain relevant information, say so clearly.
+  async testConnection(): Promise<boolean> {
+    try {
+      const response = await axios.get(`${this.baseUrl}/api/tags`, {
+        timeout: 5000,
+      });
 
-Context:
-${context}
-
-Question: ${question}
-
-Answer:`;
-  }
-
-  private generateFallbackResponse(question: string, context: string): string {
-    if (!context || context.trim().length === 0) {
-      return "I don't have enough context information to answer your question accurately.";
-    }
-
-    // Simple keyword matching fallback
-    const questionWords = question.toLowerCase().split(/\s+/);
-    const contextSentences = context
-      .split(/[.!?]+/)
-      .filter((s) => s.trim().length > 0);
-
-    const relevantSentences = contextSentences.filter((sentence) => {
-      const sentenceLower = sentence.toLowerCase();
-      return questionWords.some(
-        (word) => word.length > 3 && sentenceLower.includes(word),
+      this.logger.log('Successfully connected to Llama server');
+      this.logger.log(`Available models: ${JSON.stringify(response.data)}`);
+      return true;
+    } catch (error) {
+      this.logger.error(
+        `Failed to connect to Llama server at ${this.baseUrl}:`,
+        error.message,
       );
-    });
-
-    if (relevantSentences.length > 0) {
-      return `Based on the available context: ${relevantSentences.slice(0, 3).join('. ')}.`;
+      return false;
     }
-
-    return `I found some context information, but it may not directly answer your question: ${context.substring(0, 200)}...`;
-  }
-
-  private calculateConfidence(searchResults: any[]): number {
-    if (!searchResults || searchResults.length === 0) {
-      return 0;
-    }
-
-    // Calculate confidence based on search scores
-    const avgScore =
-      searchResults.reduce((sum, result) => {
-        return sum + (result.score || result.distance || 0);
-      }, 0) / searchResults.length;
-
-    // Normalize to 0-1 range (this is a simple heuristic)
-    return Math.min(1, Math.max(0, avgScore));
   }
 }

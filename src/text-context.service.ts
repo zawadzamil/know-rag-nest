@@ -3,6 +3,7 @@ import { MilvusService, ChunkData } from './milvus.service';
 import { EmbeddingsService } from './embeddings.service';
 import * as fs from 'fs';
 import * as path from 'path';
+import { randomBytes } from 'crypto';
 
 @Injectable()
 export class TextContextService implements OnModuleInit {
@@ -88,8 +89,8 @@ export class TextContextService implements OnModuleInit {
   }
 
   private async generateId(): Promise<string> {
-    // Use a simple UUID alternative to avoid nanoid ESM issues
-    return Math.random().toString(36).substring(2) + Date.now().toString(36);
+    // Use crypto.randomBytes instead of nanoid to avoid ESM issues
+    return randomBytes(16).toString('hex');
   }
 
   async reprocessTextFile(): Promise<void> {

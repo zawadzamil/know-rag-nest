@@ -1,6 +1,6 @@
 import { Controller, Get, Post, Body, Query } from '@nestjs/common';
 import { AppService } from './app.service';
-import { AiQueryService, QueryResponse } from './ai-query.service';
+import { AiQueryService } from './ai-query.service';
 import { TextContextService } from './text-context.service';
 
 export class QueryDto {
@@ -20,31 +20,60 @@ export class AppController {
     return this.appService.getHello();
   }
 
-  @Post('query')
-  async askQuestion(@Body() queryDto: QueryDto): Promise<QueryResponse> {
-    return await this.aiQueryService.processQuery(queryDto.question);
-  }
-
-  @Get('query')
-  async askQuestionGet(@Query('q') question: string): Promise<QueryResponse> {
-    if (!question) {
-      throw new Error('Question parameter is required');
-    }
-    return await this.aiQueryService.processQuery(question);
-  }
-
-  @Post('reprocess')
-  async reprocessContext(): Promise<{ message: string }> {
-    await this.textContextService.reprocessTextFile();
+  @Get('health')
+  async getHealth() {
+    const llamaConnection = await this.aiQueryService.testConnection();
     return {
-      message: 'Text file reprocessed and embeddings updated successfully',
+      status: 'ok',
+      llamaConnected: llamaConnection,
+      timestamp: new Date().toISOString(),
     };
   }
 
-  @Get('health')
-  getHealth(): { status: string; timestamp: string } {
+  @Post('query')
+  async query(@Body('question') question: string) {
+    if (!question) {
+      return { error: 'Question is required' };
+    }
+
+    try {
+      const answer = await this.aiQueryService.queryWithContext(question);
+      return {
+        question,
+        answer,
+        timestamp: new Date().toISOString(),
+      };
+    } catch (error) {
+      return {
+        error: error.message,
+        question,
+        timestamp: new Date().toISOString(),
+      };
+    }
+  }
+
+  @Post('reprocess')
+  async reprocessText() {
+    try {
+      await this.textContextService.reprocessTextFile();
+      return {
+        message: 'Text file reprocessed successfully',
+        timestamp: new Date().toISOString(),
+      };
+    } catch (error) {
+      return {
+        error: error.message,
+        timestamp: new Date().toISOString(),
+      };
+    }
+  }
+
+  @Get('test-llama')
+  async testLlama(@Query('message') message: string = 'Hello, how are you?') {
+    const isConnected = await this.aiQueryService.testConnection();
     return {
-      status: 'ok',
+      connected: isConnected,
+      testMessage: message,
       timestamp: new Date().toISOString(),
     };
   }

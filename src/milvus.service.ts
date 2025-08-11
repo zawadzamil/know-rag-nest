@@ -38,7 +38,7 @@ export class MilvusService implements OnModuleInit {
   }
 
   private async createCollection() {
-    const dimension = this.configService.get<number>('VECTOR_DIMENSION', 1536);
+    const dimension = this.configService.get<number>('VECTOR_DIMENSION', 384);
 
     // Check if collection exists
     const collections = await this.client.listCollections();
@@ -65,7 +65,7 @@ export class MilvusService implements OnModuleInit {
           {
             name: 'embedding',
             data_type: DataType.FloatVector,
-            dim: dimension,
+            dim: dimension, // Use 'dim' instead of 'dimension'
           },
         ],
       });
@@ -111,19 +111,41 @@ export class MilvusService implements OnModuleInit {
     queryEmbedding: number[],
     topK: number = 5,
   ): Promise<any[]> {
-    const searchParams = {
-      collection_name: this.collectionName,
-      vector: queryEmbedding,
-      filter: '',
-      params: { nprobe: 10 },
-      limit: topK,
-      offset: 0,
-      metric_type: 'IP',
-      output_fields: ['id', 'text'],
-    };
+    try {
+      this.logger.log(`Searching for similar chunks with topK=${topK}`);
 
-    const result = await this.client.search(searchParams);
-    return result.results;
+      const searchParams = {
+        collection_name: this.collectionName,
+        vector: queryEmbedding,
+        filter: '',
+        params: { nprobe: 10 },
+        limit: topK,
+        offset: 0,
+        metric_type: 'IP',
+        output_fields: ['id', 'text'],
+      };
+
+      const result = await this.client.search(searchParams);
+
+      this.logger.log(`Search returned ${result.results?.length || 0} results`);
+
+      // Log each result for debugging
+      if (result.results) {
+        result.results.forEach((chunk, index) => {
+          this.logger.log(
+            `Result ${index + 1}: Score=${chunk.score}, Text="${chunk.text?.substring(
+              0,
+              100,
+            )}..."`,
+          );
+        });
+      }
+
+      return result.results || [];
+    } catch (error) {
+      this.logger.error('Error searching similar chunks:', error.message);
+      throw error;
+    }
   }
 
   async deleteCollection(): Promise<void> {
@@ -131,5 +153,26 @@ export class MilvusService implements OnModuleInit {
       collection_name: this.collectionName,
     });
     this.logger.log(`Collection '${this.collectionName}' deleted`);
+  }
+
+  async getAllChunks(): Promise<any[]> {
+    try {
+      this.logger.log('Retrieving all chunks from collection');
+
+      const queryParams = {
+        collection_name: this.collectionName,
+        expr: '', // Empty expression to get all records
+        output_fields: ['id', 'text'],
+        limit: 100, // Adjust based on your needs
+      };
+
+      const result = await this.client.query(queryParams);
+      this.logger.log(`Retrieved ${result.data?.length || 0} total chunks`);
+
+      return result.data || [];
+    } catch (error) {
+      this.logger.error('Error retrieving all chunks:', error.message);
+      return [];
+    }
   }
 }
