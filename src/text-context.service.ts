@@ -15,7 +15,13 @@ export class TextContextService implements OnModuleInit {
   ) {}
 
   async onModuleInit() {
-    await this.loadAndProcessTextFile();
+    // Only load about_me.txt if PDF_ONLY mode is not enabled
+    const pdfOnlyMode = process.env.PDF_ONLY_MODE === 'true';
+    if (!pdfOnlyMode) {
+      await this.loadAndProcessTextFile();
+    } else {
+      this.logger.log('PDF_ONLY_MODE enabled - skipping about_me.txt loading');
+    }
   }
 
   private async loadAndProcessTextFile(): Promise<void> {
