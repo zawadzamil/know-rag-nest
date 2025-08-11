@@ -1,7 +1,6 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { MilvusService, ChunkData } from './milvus.service';
 import { EmbeddingsService } from './embeddings.service';
-import { nanoid } from 'nanoid';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -32,8 +31,14 @@ export class TextContextService implements OnModuleInit {
     }
   }
 
-  private chunkText(text: string, chunkSize: number = 500, overlap: number = 50): string[] {
-    const sentences = text.split(/[.!?]+/).filter(sentence => sentence.trim().length > 0);
+  private chunkText(
+    text: string,
+    chunkSize: number = 500,
+    overlap: number = 50,
+  ): string[] {
+    const sentences = text
+      .split(/[.!?]+/)
+      .filter((sentence) => sentence.trim().length > 0);
     const chunks: string[] = [];
     let currentChunk = '';
 
@@ -69,14 +74,22 @@ export class TextContextService implements OnModuleInit {
 
     const embeddings = await this.embeddingsService.generateEmbeddings(chunks);
 
-    const chunkData: ChunkData[] = chunks.map((chunk, index) => ({
-      id: nanoid(),
-      text: chunk,
-      embedding: embeddings[index],
-    }));
+    const chunkData: ChunkData[] = [];
+    for (let index = 0; index < chunks.length; index++) {
+      chunkData.push({
+        id: await this.generateId(),
+        text: chunks[index],
+        embedding: embeddings[index],
+      });
+    }
 
     await this.milvusService.insertChunks(chunkData);
     this.logger.log('All chunks processed and stored in Milvus');
+  }
+
+  private async generateId(): Promise<string> {
+    // Use a simple UUID alternative to avoid nanoid ESM issues
+    return Math.random().toString(36).substring(2) + Date.now().toString(36);
   }
 
   async reprocessTextFile(): Promise<void> {

@@ -1,55 +1,72 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import axios from 'axios';
 import { MilvusService } from './milvus.service';
 import { EmbeddingsService } from './embeddings.service';
-import axios from 'axios';
 
 export interface QueryResponse {
   answer: string;
-  relevantChunks: string[];
+  sources: string[];
   confidence: number;
 }
 
 @Injectable()
 export class AiQueryService {
   private readonly logger = new Logger(AiQueryService.name);
-  private readonly geminiApiKey: string;
-  private readonly geminiApiUrl: string;
+  private readonly localLlmHost: string;
+  private readonly localLlmPort: string;
+  private readonly localLlmModel: string;
+  private readonly baseUrl: string;
 
   constructor(
+    private configService: ConfigService,
     private milvusService: MilvusService,
     private embeddingsService: EmbeddingsService,
-    private configService: ConfigService,
   ) {
-    this.geminiApiKey = this.configService.get<string>('GEMINI_API_KEY');
-    this.geminiApiUrl = this.configService.get<string>('GEMINI_API_URL');
+    this.localLlmHost = this.configService.get<string>(
+      'LOCAL_LLM_HOST',
+      'localhost',
+    );
+    this.localLlmPort = this.configService.get<string>(
+      'LOCAL_LLM_PORT',
+      '11434',
+    );
+    this.localLlmModel = this.configService.get<string>(
+      'LOCAL_LLM_MODEL',
+      'llama3.1',
+    );
+    this.baseUrl = `http://${this.localLlmHost}:${this.localLlmPort}`;
   }
 
-  async processQuery(query: string): Promise<QueryResponse> {
+  async processQuery(question: string): Promise<QueryResponse> {
     try {
-      // Step 1: Generate embedding for the user query
-      this.logger.log(`Processing query: ${query}`);
-      const queryEmbedding = await this.embeddingsService.generateEmbedding(query);
+      this.logger.log(`Processing query: ${question}`);
 
-      // Step 2: Search for relevant chunks in Milvus
-      const searchResults = await this.milvusService.searchSimilar(queryEmbedding, 5);
+      // Generate embedding for the question
+      const queryEmbedding =
+        await this.embeddingsService.generateEmbedding(question);
 
-      const relevantChunks = searchResults.map(result => result.text);
-      this.logger.log(`Found ${relevantChunks.length} relevant chunks`);
+      // Search for relevant context in Milvus
+      const searchResults = await this.milvusService.searchSimilar(
+        queryEmbedding,
+        5,
+      );
 
-      // Step 3: Prepare context for Gemini
-      const context = relevantChunks.join('\n\n');
+      // Extract context from search results
+      const contextTexts = searchResults.map(
+        (result) => result.text || result.entity?.text || '',
+      );
+      const context = contextTexts
+        .filter((text) => text.length > 0)
+        .join('\n\n');
 
-      // Step 4: Generate response using Gemini AI
-      const answer = await this.generateGeminiResponse(query, context);
-
-      // Step 5: Calculate confidence based on search scores
-      const confidence = this.calculateConfidence(searchResults);
+      // Generate response using local LLaMA model
+      const answer = await this.generateResponse(question, context);
 
       return {
         answer,
-        relevantChunks,
-        confidence,
+        sources: contextTexts.filter((text) => text.length > 0),
+        confidence: this.calculateConfidence(searchResults),
       };
     } catch (error) {
       this.logger.error('Error processing query:', error.message);
@@ -57,50 +74,83 @@ export class AiQueryService {
     }
   }
 
-  private async generateGeminiResponse(query: string, context: string): Promise<string> {
-    const prompt = `Based on the following context about a person, please answer the user's question accurately and concisely.
-
-Context:
-${context}
-
-Question: ${query}
-
-Please provide a helpful and accurate answer based only on the information provided in the context. If the context doesn't contain enough information to answer the question, please say so.
-
-Answer:`;
+  private async generateResponse(
+    question: string,
+    context: string,
+  ): Promise<string> {
+    const prompt = this.buildPrompt(question, context);
 
     try {
+      // Try Ollama API format first
       const response = await axios.post(
-        `${this.geminiApiUrl}?key=${this.geminiApiKey}`,
+        `${this.baseUrl}/api/generate`,
         {
-          contents: [
-            {
-              parts: [
-                {
-                  text: prompt,
-                },
-              ],
-            },
-          ],
-          generationConfig: {
+          model: this.localLlmModel,
+          prompt: prompt,
+          stream: false,
+          options: {
             temperature: 0.7,
-            topK: 40,
-            topP: 0.95,
-            maxOutputTokens: 1024,
+            max_tokens: 500,
           },
         },
         {
+          timeout: 60000,
           headers: {
             'Content-Type': 'application/json',
           },
         },
       );
 
-      return response.data.candidates[0].content.parts[0].text;
+      if (response.data?.response) {
+        this.logger.log(
+          'Successfully generated response using local LLaMA model',
+        );
+        return response.data.response.trim();
+      }
+
+      throw new Error('No response from local model');
     } catch (error) {
-      this.logger.error('Error calling Gemini API:', error.message);
-      throw new Error(`Failed to generate AI response: ${error.message}`);
+      this.logger.warn(`Local LLaMA model error: ${error.message}`);
+
+      // Fallback to simple context-based response
+      return this.generateFallbackResponse(question, context);
     }
+  }
+
+  private buildPrompt(question: string, context: string): string {
+    return `You are a helpful assistant. Use the following context to answer the user's question. If the context doesn't contain relevant information, say so clearly.
+
+Context:
+${context}
+
+Question: ${question}
+
+Answer:`;
+  }
+
+  private generateFallbackResponse(question: string, context: string): string {
+    if (!context || context.trim().length === 0) {
+      return "I don't have enough context information to answer your question accurately.";
+    }
+
+    // Simple keyword matching fallback
+    const questionWords = question.toLowerCase().split(/\s+/);
+    const contextSentences = context
+      .split(/[.!?]+/)
+      .filter((s) => s.trim().length > 0);
+
+    const relevantSentences = contextSentences.filter((sentence) => {
+      const sentenceLower = sentence.toLowerCase();
+      return questionWords.some(
+        (word) => word.length > 3 && sentenceLower.includes(word),
+      );
+    });
+
+    if (relevantSentences.length > 0) {
+      return `Based on the available context: ${relevantSentences.slice(0, 3).join('. ')}.`;
+    }
+
+    return `I found some context information, but it may not directly answer your question: ${context.substring(0, 200)}...`;
   }
 
   private calculateConfidence(searchResults: any[]): number {
@@ -108,11 +158,13 @@ Answer:`;
       return 0;
     }
 
-    // Calculate confidence based on similarity scores
-    const scores = searchResults.map(result => result.score || 0);
-    const avgScore = scores.reduce((sum, score) => sum + score, 0) / scores.length;
+    // Calculate confidence based on search scores
+    const avgScore =
+      searchResults.reduce((sum, result) => {
+        return sum + (result.score || result.distance || 0);
+      }, 0) / searchResults.length;
 
-    // Normalize score to percentage (assuming scores are between 0 and 1)
-    return Math.min(Math.max(avgScore * 100, 0), 100);
+    // Normalize to 0-1 range (this is a simple heuristic)
+    return Math.min(1, Math.max(0, avgScore));
   }
 }

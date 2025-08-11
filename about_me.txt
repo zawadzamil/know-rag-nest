@@ -1,9 +1,9 @@
-My name is John Doe, and I am a software engineer with over 8 years of experience in full-stack development. I specialize in Node.js, React, and cloud technologies like AWS and Google Cloud Platform.
+Hi, I'm John Doe, a software engineer with 5 years of experience in full-stack development. I specialize in JavaScript, TypeScript, Node.js, and React. I have worked on various projects including e-commerce platforms, social media applications, and enterprise software solutions.
 
-I have worked at several tech companies, including a startup where I built scalable microservices architecture and a Fortune 500 company where I led a team of 6 developers. My expertise includes building RESTful APIs, implementing CI/CD pipelines, and working with databases like PostgreSQL, MongoDB, and Redis.
+I am passionate about building scalable and efficient systems. My experience includes working with microservices architecture, cloud platforms like AWS and Azure, and database technologies including PostgreSQL, MongoDB, and Redis.
 
-In my current role, I focus on developing AI-powered applications and have experience with machine learning frameworks like TensorFlow and PyTorch. I'm passionate about clean code, test-driven development, and mentoring junior developers.
+In my current role, I lead a team of 4 developers and am responsible for architectural decisions and code reviews. I enjoy mentoring junior developers and contributing to open-source projects.
 
-I hold a Bachelor's degree in Computer Science from MIT and have several certifications including AWS Solutions Architect and Google Cloud Professional Developer. I enjoy hiking, reading technical books, and contributing to open-source projects in my free time.
+My hobbies include hiking, photography, and reading about emerging technologies. I am always eager to learn new skills and take on challenging projects that push the boundaries of what's possible with modern web technologies.
 
-I'm currently working on a personal project involving natural language processing and retrieval-augmented generation systems. I believe in continuous learning and staying updated with the latest technology trends.
+I hold a Bachelor's degree in Computer Science from Tech University and have certifications in AWS Solutions Architecture and Google Cloud Platform.

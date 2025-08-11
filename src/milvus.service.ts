@@ -15,7 +15,10 @@ export class MilvusService implements OnModuleInit {
   private collectionName: string;
 
   constructor(private configService: ConfigService) {
-    this.collectionName = this.configService.get<string>('COLLECTION_NAME', 'context_chunks');
+    this.collectionName = this.configService.get<string>(
+      'COLLECTION_NAME',
+      'context_chunks',
+    );
   }
 
   async onModuleInit() {
@@ -62,7 +65,7 @@ export class MilvusService implements OnModuleInit {
           {
             name: 'embedding',
             data_type: DataType.FloatVector,
-            dimension: dimension,
+            dim: dimension,
           },
         ],
       });
@@ -76,7 +79,9 @@ export class MilvusService implements OnModuleInit {
         params: { nlist: 1024 },
       });
 
-      this.logger.log(`Collection '${this.collectionName}' created successfully`);
+      this.logger.log(
+        `Collection '${this.collectionName}' created successfully`,
+      );
     } else {
       this.logger.log(`Collection '${this.collectionName}' already exists`);
     }
@@ -102,7 +107,10 @@ export class MilvusService implements OnModuleInit {
     this.logger.log(`Inserted ${chunks.length} chunks into Milvus`);
   }
 
-  async searchSimilar(queryEmbedding: number[], topK: number = 5): Promise<any[]> {
+  async searchSimilar(
+    queryEmbedding: number[],
+    topK: number = 5,
+  ): Promise<any[]> {
     const searchParams = {
       collection_name: this.collectionName,
       vector: queryEmbedding,
